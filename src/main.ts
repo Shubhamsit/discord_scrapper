@@ -7,7 +7,7 @@ import { scrapeServerMembers } from './scrape';
   // const { identifier, password } = await askCredentials();
 
   let identifier:string="shubhamsit31@gmail.com"
-let password:string="Shubhamdiscord@3431"
+let password:string=""
   const { browser, page } = await loginToDiscord(identifier, password);
 
   // Step 2: Prompt user for the server URL to scrape
