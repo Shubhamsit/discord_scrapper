@@ -27,10 +27,10 @@ export async function loginToDiscord(identifier: string, password: string) {
   // Check login success
   try {
     await page.waitForSelector('[aria-label="Servers"]', { timeout: 10000 });
-    console.log('✅ Login successful.');
+    console.log(' Login successful.');
     return { browser, page };
   } catch (e) {
-    console.error('❌ Login failed: Please check your credentials or solve any CAPTCHA manually.');
+    console.error(' Login failed: Please check your credentials or solve any CAPTCHA manually.');
     await browser.close();
     throw new Error('Login failed');
   }

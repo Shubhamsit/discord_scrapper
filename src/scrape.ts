@@ -1,103 +1,231 @@
-
-
-import { Page, ElementHandle } from 'puppeteer';
+import { Page, ElementHandle } from "puppeteer";
 
 interface MemberData {
   displayName: string;
   username: string | null;
   userID: string | null;
   avatar: string | null;
-  status: string;
+  status: string | null;
+  index: number;
 }
 
-export async function scrapeServerMembers(page: Page, serverUrl: string): Promise<MemberData[]> {
-  console.log(' Navigating to the server...');
+import fs from "fs";
+import path from "path";
+
+export async function scrapeServerMembers(
+  page: Page,
+  serverUrl: string
+): Promise<MemberData[]> {
+  console.log(" Starting sequential member scraping...");
 
   try {
-    await page.goto(serverUrl, { waitUntil: 'networkidle2' });
-    console.log(' Page loaded successfully');
+    // 1. Navigate to server and ensure member list is visible
+    await page.goto(serverUrl, { waitUntil: "networkidle2", timeout: 30000 });
     await ensureMemberListVisible(page);
-    return await scrapeMembersWithProfiles(page); // Scrape members after the list is fully loaded
+
+    // 2. Get the member list container
+    const memberList = await page.waitForSelector('[aria-label="Members"]', {
+      timeout: 10000,
+    });
+    if (!memberList) throw new Error("Member list not found");
+
+    // 3. Start scraping sequentially
+    const members = await scrapeWithIndexTracking(page, memberList);
+
+    // 4. Save results to JSON file
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fileName = `members_${timestamp}.json`;
+    const filePath = path.join(process.cwd(), "data", fileName);
+
+    // Create data directory if it doesn't exist
+    if (!fs.existsSync(path.dirname(filePath))) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    }
+
+    fs.writeFileSync(filePath, JSON.stringify(members, null, 2));
+    console.log(` Saved ${members.length} members to ${filePath}`);
+
+    return members;
   } catch (error) {
-    console.error(' Error in scrapeServerMembers:', error instanceof Error ? error.message : String(error));
+    console.error(
+      " Scraping failed:",
+      error instanceof Error ? error.message : String(error)
+    );
     return [];
   }
 }
 
-async function ensureMemberListVisible(page: Page): Promise<void> {
-  try {
-    if (await page.$('[aria-label="Members"]')) {
-      console.log(' Member list already visible');
-      return;
-    }
-
-    console.log(' Expanding member list...');
-    const showMembersButton = await page.waitForSelector('[aria-label="Show Member List"]', {
-      timeout: 10000,
-      visible: true
-    });
-
-    if (showMembersButton) {
-      await showMembersButton.click();
-      console.log("click1");
-      
-      await page.waitForSelector('[aria-label="Members"]', { timeout: 10000 });
-    }
-  } catch (error) {
-    console.log(' Continuing with potentially incomplete member list:', error instanceof Error ? error.message : String(error));
-  }
-}
-
-
-async function scrapeMembersWithProfiles(page: Page): Promise<MemberData[]> {
-  console.log('👥 Starting detailed member scraping...');
-
- 
-  await page.waitForSelector('[aria-label="Members"] [class*="member"]', { timeout: 5000 });
-  
-  const memberHandles = await page.$$('[aria-label="Members"] [class*="member"]');
-  console.log(memberHandles.length,"length");
-  console.log(memberHandles);
-  
-  
+async function scrapeWithIndexTracking(
+  page: Page,
+  memberList: ElementHandle<Element>
+): Promise<MemberData[]> {
   const members: MemberData[] = [];
+  let currentIndex = 0;
+  let consecutiveFailures = 0;
+  const maxFailures = 3;
+  const scrollStep = 500;
 
-  for (const [index, member] of memberHandles.entries()) {
- 
-    try {
-      await member.click();
-      await page.waitForSelector('[role="dialog"]', { timeout: 5000 });
-      
-      const userData = await page.evaluate((): MemberData => {
-        const profile = document.querySelector('[role="dialog"]');
-        const usernameElement = profile?.querySelector('.userTagUsername__63ed3');
-        const avatarElement = profile?.querySelector('img[src*="avatars"]') as HTMLImageElement | null;
-        const profileLink = profile?.querySelector('a[href*="/users/"]') as HTMLAnchorElement | null;
-        
-        return {
-          displayName: profile?.querySelector('.nickname__63ed3')?.textContent?.trim() || 'Unknown',
-          username: usernameElement?.textContent?.trim() || null,
-          userID: profileLink?.href.match(/\/users\/(\d+)/)?.[1] || null,
-          avatar: avatarElement?.src || null,
-          status: profile?.querySelector('[class*="status"]')?.ariaLabel || 'offline'
-        };
-      });
-      
-      if (userData.username) {
-        console.log(` ${index+1}/${memberHandles.length}: ${userData.username}`);
-        members.push(userData);
+  while (consecutiveFailures < maxFailures) {
+    // Find member with current index
+    const member = await memberList.$(`[index="${currentIndex}"]`);
+
+    if (member) {
+      try {
+        // Process the member
+        const memberData = await processMember(page, member, currentIndex);
+        if (memberData) {
+          members.push(memberData);
+          console.log(
+            ` ${currentIndex}: ${memberData.username || memberData.displayName}`
+          );
+          currentIndex++;
+          consecutiveFailures = 0;
+
+          // Scroll to keep member in view (every 10 members)
+          if (currentIndex % 10 === 0) {
+            await memberList.evaluate((el, index) => {
+              const member = el.querySelector(`[index="${index}"]`);
+              if (member)
+                member.scrollIntoView({ behavior: "smooth", block: "center" });
+            }, currentIndex);
+            await delay(500);
+          }
+        }
+      } catch (error) {
+        console.warn(
+          ` Error processing member ${currentIndex}:`,
+          error instanceof Error ? error.message : String(error)
+        );
+        consecutiveFailures++;
       }
-      
-      await page.keyboard.press('Escape');
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-    } catch (error) {
-      console.warn(` Skipping member ${index+1}:`, error instanceof Error ? error.message : String(error));
+    } else {
+      // Member not found - scroll down and try again
+      console.log(` Member ${currentIndex} not found, scrolling...`);
+      await memberList.evaluate((el, step) => {
+        el.scrollBy(0, step);
+      }, scrollStep);
+
+      await delay(1000 + Math.random() * 500);
+      consecutiveFailures++;
+
+      // Check if we've reached the end
+      const isAtBottom = await memberList.evaluate((el) => {
+        return el.scrollHeight - el.scrollTop <= el.clientHeight + 100;
+      });
+
+      if (isAtBottom && consecutiveFailures >= maxFailures) {
+        console.log("ℹ Reached end of member list");
+        break;
+      }
     }
   }
-  
-  console.log(` Successfully scraped ${members.length}/${memberHandles.length} members`);
+
+  console.log(` Finished scraping ${members.length} members`);
   return members;
 }
 
+async function processMember(
+  page: Page,
+  member: ElementHandle<Element>,
+  index: number
+): Promise<MemberData | null> {
+  try {
+    // Hover first to make element interactive
+    await member.hover();
+    await delay(200 + Math.random() * 300);
 
+    // Get basic info without opening profile
+    const basicInfo = await member.evaluate((el): Partial<MemberData> => {
+      const avatarEl = el.querySelector(
+        'img[src*="avatars"]'
+      ) as HTMLImageElement | null;
+      const nameEl = el.querySelector('[class*="name"]');
+      const statusEl = el.querySelector('[class*="status"]');
+
+      return {
+        displayName: nameEl?.textContent?.trim() || "Unknown",
+        userID: avatarEl?.src.match(/\/(\d+)\//)?.[1] || null,
+        avatar: avatarEl?.src || null,
+        status: statusEl?.getAttribute("aria-label") || "offline",
+      };
+    });
+
+    // Click to open profile (with retry)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await member.click({ delay: 50 });
+        await page.waitForSelector('[role="dialog"]', { timeout: 3000 });
+        break;
+      } catch {
+        if (attempt === 1) throw new Error("Failed to open profile");
+        await delay(500);
+      }
+    }
+
+    // Extract profile data
+    const profileData = await page.evaluate((): Partial<MemberData> | null => {
+      const profile = document.querySelector('[role="dialog"]');
+      if (!profile) return null;
+
+      const usernameEl = profile.querySelector(".userTagUsername__63ed3");
+      const profileLink = profile.querySelector(
+        'a[href*="/users/"]'
+      ) as HTMLAnchorElement | null;
+
+      return {
+        username: usernameEl?.textContent?.trim() || null,
+        userID: profileLink?.href.match(/\/users\/(\d+)/)?.[1] || null,
+      };
+    });
+
+    // Close profile
+    await page.keyboard.press("Escape");
+    await delay(200);
+
+    return {
+      displayName: basicInfo.displayName || "Unknown",
+      username: profileData?.username || null,
+      userID: profileData?.userID || basicInfo.userID || null,
+      avatar: basicInfo.avatar || null,
+      status: basicInfo.status || null,
+      index: index,
+    };
+  } catch (error) {
+    console.warn(
+      ` Failed to process member ${index}:`,
+      error instanceof Error ? error.message : String(error)
+    );
+    await page.keyboard.press("Escape").catch(() => {});
+    return null;
+  }
+}
+
+// Helper functions
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function ensureMemberListVisible(page: Page): Promise<void> {
+  try {
+    if (await page.$('[aria-label="Members"]')) return;
+
+    const showButton = await page.waitForSelector(
+      '[aria-label="Show Member List"]',
+      {
+        timeout: 10000,
+        visible: true,
+      }
+    );
+
+    if (showButton) {
+      await showButton.click();
+      await page.waitForSelector('[aria-label="Members"]', { timeout: 10000 });
+    }
+  } catch (error) {
+    console.warn(
+      " Could not expand member list:",
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
