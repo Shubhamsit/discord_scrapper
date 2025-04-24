@@ -1,27 +1,58 @@
-// main.ts
-import {  loginToDiscord } from './login';
-import { scrapeServerMembers } from './scrape';
-import {goToUserProfile} from './profile';
+import { loginToDiscord } from "./login";
+import { scrapeServerMembers } from "./scrape";
+import { prompt } from "enquirer";
+import dotenv from "dotenv";
+import path from "path";
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
+console.log("Loaded SERVERURL:", process.env.SERVERURL);
+
+interface Credentials {
+  identifier: string;
+  password: string;
+}
+
+async function askCredentials(): Promise<Credentials> {
+  const response = await prompt([
+    {
+      type: "input",
+      name: "identifier",
+      message: "Enter your Discord email or username:",
+      validate: (value: string) =>
+        value.trim() ? true : "Please enter your email/username",
+    },
+    {
+      type: "password",
+      name: "password",
+      message: "Enter your Discord password:",
+      validate: (value: string) => (value ? true : "Password cannot be empty"),
+    },
+  ]);
+
+ 
+  return response as Credentials;
+}
 
 (async () => {
-  // Step 1: Get user credentials and log in
-  // const { identifier, password } = await askCredentials();
 
-  let identifier:string="shubhamsit31@gmail.com"
-let password:string=""
-let userid:string="1164576122818793565"
-  const { browser, page } = await loginToDiscord(identifier, password);
-
-  // await goToUserProfile(page,userid)
-
-
-
-  // Step 2: Prompt user for the server URL to scrape
-  const serverUrl = 'https://discord.com/channels/1231112132595028008/1231196402730664047'; // Replace with actual server URL
-  let data=await scrapeServerMembers(page, serverUrl);
-  console.log(data);
   
 
-  // Close the browser when done
+  const { identifier, password } = await askCredentials();
+
+  const { browser, page } = await loginToDiscord(identifier, password);
+
+
+
+  const serverUrl = process.env.SERVERURL;
+
+  if (!serverUrl) {
+    throw new Error("SERVERURL is not defined in your .env file.");
+  }
+
+  let data = await scrapeServerMembers(page, serverUrl);
+  console.log(data);
+
+  
+
   await browser.close();
 })();

@@ -1,43 +1,73 @@
 import { Page, ElementHandle } from "puppeteer";
+import fs from "fs";
+import path from "path";
 
 interface MemberData {
   displayName: string;
   username: string | null;
   userID: string | null;
+  serverID:string|null,
+  channelID:string|null,
   avatar: string | null;
   status: string | null;
   index: number;
 }
 
-import fs from "fs";
-import path from "path";
+let globalServerId: string | null = null;
+let globalChannelId: string | null = null;
 
 export async function scrapeServerMembers(
   page: Page,
   serverUrl: string
 ): Promise<MemberData[]> {
-  console.log(" Starting sequential member scraping...");
+
+  
+const parts = serverUrl.split('/');
+globalServerId = parts[4];  
+globalChannelId= parts[5]; 
+  console.log("🚀 Starting sequential member scraping...");
 
   try {
     // 1. Navigate to server and ensure member list is visible
+
     await page.goto(serverUrl, { waitUntil: "networkidle2", timeout: 30000 });
     await ensureMemberListVisible(page);
 
+    // Get exact server and channel names
+
+    const [serverName, channelName] = await page.evaluate(() => {
+      // Server name from header (Best ❣)
+      const serverNameEl = document.querySelector('[class*="name_f37cb1"]');
+      
+      // Channel name from title (general)
+
+      const channelNameEl = document.querySelector('h1[class*="title__9293f"]');
+      
+      return [
+        (serverNameEl?.textContent || 'server').trim(),
+        (channelNameEl?.textContent?.replace(/^.*:/, '') || 'channel').trim()
+      ];
+    });
+
     // 2. Get the member list container
+
     const memberList = await page.waitForSelector('[aria-label="Members"]', {
       timeout: 10000,
     });
     if (!memberList) throw new Error("Member list not found");
 
     // 3. Start scraping sequentially
+
     const members = await scrapeWithIndexTracking(page, memberList);
 
-    // 4. Save results to JSON file
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileName = `members_${timestamp}.json`;
+    // 4. Save results to JSON file with exact names
+
+    const fileName = `${serverName}_${channelName}.json`
+      .replace(/[/\\?%*:|"<>]/g, ''); // Remove illegal filename characters
     const filePath = path.join(process.cwd(), "data", fileName);
 
     // Create data directory if it doesn't exist
+
     if (!fs.existsSync(path.dirname(filePath))) {
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
     }
@@ -48,12 +78,13 @@ export async function scrapeServerMembers(
     return members;
   } catch (error) {
     console.error(
-      " Scraping failed:",
+      "Scraping failed:",
       error instanceof Error ? error.message : String(error)
     );
     return [];
   }
 }
+
 
 async function scrapeWithIndexTracking(
   page: Page,
@@ -67,11 +98,13 @@ async function scrapeWithIndexTracking(
 
   while (consecutiveFailures < maxFailures) {
     // Find member with current index
+
     const member = await memberList.$(`[index="${currentIndex}"]`);
 
     if (member) {
       try {
         // Process the member
+
         const memberData = await processMember(page, member, currentIndex);
         if (memberData) {
           members.push(memberData);
@@ -82,6 +115,7 @@ async function scrapeWithIndexTracking(
           consecutiveFailures = 0;
 
           // Scroll to keep member in view (every 10 members)
+
           if (currentIndex % 10 === 0) {
             await memberList.evaluate((el, index) => {
               const member = el.querySelector(`[index="${index}"]`);
@@ -100,6 +134,7 @@ async function scrapeWithIndexTracking(
       }
     } else {
       // Member not found - scroll down and try again
+
       console.log(` Member ${currentIndex} not found, scrolling...`);
       await memberList.evaluate((el, step) => {
         el.scrollBy(0, step);
@@ -109,12 +144,13 @@ async function scrapeWithIndexTracking(
       consecutiveFailures++;
 
       // Check if we've reached the end
+
       const isAtBottom = await memberList.evaluate((el) => {
         return el.scrollHeight - el.scrollTop <= el.clientHeight + 100;
       });
 
       if (isAtBottom && consecutiveFailures >= maxFailures) {
-        console.log("ℹ Reached end of member list");
+        console.log(" Reached end of member list");
         break;
       }
     }
@@ -131,10 +167,12 @@ async function processMember(
 ): Promise<MemberData | null> {
   try {
     // Hover first to make element interactive
+
     await member.hover();
     await delay(200 + Math.random() * 300);
 
     // Get basic info without opening profile
+
     const basicInfo = await member.evaluate((el): Partial<MemberData> => {
       const avatarEl = el.querySelector(
         'img[src*="avatars"]'
@@ -151,6 +189,7 @@ async function processMember(
     });
 
     // Click to open profile (with retry)
+    
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         await member.click({ delay: 50 });
@@ -163,6 +202,7 @@ async function processMember(
     }
 
     // Extract profile data
+
     const profileData = await page.evaluate((): Partial<MemberData> | null => {
       const profile = document.querySelector('[role="dialog"]');
       if (!profile) return null;
@@ -186,6 +226,8 @@ async function processMember(
       displayName: basicInfo.displayName || "Unknown",
       username: profileData?.username || null,
       userID: profileData?.userID || basicInfo.userID || null,
+      serverID:globalServerId || null,
+      channelID:globalChannelId || null,
       avatar: basicInfo.avatar || null,
       status: basicInfo.status || null,
       index: index,

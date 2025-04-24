@@ -4,7 +4,7 @@ import puppeteer from 'puppeteer';
 export async function loginToDiscord(identifier: string, password: string) {
   const browser = await puppeteer.launch({
     headless: false,
-    executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', // Change to your Chrome path
+    executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 
     defaultViewport: null,
     args: ['--start-maximized'],
   });
@@ -12,7 +12,7 @@ export async function loginToDiscord(identifier: string, password: string) {
   const page = await browser.newPage();
   await page.goto('https://discord.com/login', { waitUntil: 'networkidle2', timeout: 0 });
 
-  console.log('⌨️ Filling login form...');
+  console.log(' Filling login form...');
 
   // Fill input fields
   await page.type('input[name="email"]', identifier, { delay: 100 });
